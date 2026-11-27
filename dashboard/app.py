@@ -15,6 +15,7 @@ import streamlit as st
 
 import charts
 import data
+import live
 from ctx import CTX, PAGES
 from dstm_rts.config import RTSConfig
 
@@ -68,6 +69,8 @@ def is_dark() -> bool:
 
 # ------------------------------------------------------------------ settings -> config
 DEFAULT = RTSConfig()
+QUICK_START = ["TATASTEEL", "JSWSTEEL", "TMPV", "ADANIPORTS", "NTPC", "LT", "BHARTIARTL", "SUNPHARMA",
+               "VEDL", "INDIGO", "ZEEL", "COFFEEDAY"]
 
 
 def sidebar_settings() -> RTSConfig:
@@ -115,40 +118,93 @@ def fmt_asof(s: str) -> str:
             return str(s)
 
 
+def live_status_panel(where):
+    """Progress of the background live fetch. Re-draws itself every 2 s while a fetch runs; when the fetch ends it
+    reloads the whole app once so every page shows the new figures."""
+    job = live.JOB
+
+    def body():
+        s = job.snapshot()
+        seen = st.session_state.get("live_seen_version", s.get("version", 0))
+        if not s.get("running") and s.get("version", 0) > seen:
+            st.session_state["live_seen_version"] = s["version"]
+            st.session_state["live_result"] = {k: s.get(k) for k in ("ok", "message", "failures")}
+            st.cache_data.clear()
+            st.rerun(scope="app")
+        st.session_state.setdefault("live_seen_version", s.get("version", 0))
+        if s.get("running"):
+            n, i = s["n"], s.get("i", 0)
+            st.progress(min(i / max(n, 1), 1.0),
+                        f"Live fetch: {i}/{n} companies · {live.fmt_secs(s['elapsed_s'])} elapsed · "
+                        f"~{live.fmt_secs(s['eta_s'])} left")
+            st.caption(f"{s.get('label', '')} — now: {str(s.get('current', ''))[:90]}")
+            st.caption("Runs on the server: you can keep working, switch pages or close this tab; the dashboard "
+                       "switches to the new figures when it finishes.")
+            c1, c2 = st.columns(2)
+            if c1.button("Show fetched so far", key=f"partial_{where}", width="stretch",
+                         help="Re-score now with the companies already fetched; the fetch keeps running."):
+                with job._lock:
+                    job.state["frozen_token"] = data._raw_token()
+                st.cache_data.clear()
+                st.rerun(scope="app")
+            if c2.button("Stop", key=f"stop_{where}", width="stretch"):
+                job.stop()
+        res = st.session_state.get("live_result")
+        if res and not s.get("running"):
+            (st.success if res.get("ok") else st.error)(res.get("message", ""))
+            if res.get("failures"):
+                st.dataframe(pd.DataFrame(res["failures"]), hide_index=True, height=150)
+    st.fragment(body, run_every=2 if job.running else None)()
+
+
+def start_live(symbols: list[str], label: str):
+    ok, msg = live.JOB.start(symbols, label)
+    if not ok:
+        st.warning(msg)
+    else:
+        st.session_state.pop("live_result", None)
+        st.rerun()
+
+
 def sidebar_data(ld: dict, tok: str, scores: pd.DataFrame):
     sb = st.sidebar
     sb.markdown("### Debt-Service Truth Monitor")
-    badge = {"live cache": "🟢 Live cache", "offline snapshot": "🟡 Offline snapshot",
-             "synthetic demo": "🔴 SYNTHETIC demo"}[ld["source"]]
-    sb.markdown(f"**Data:** {badge}  \n**As of:** {fmt_asof(ld['as_of'])}  \n**Companies:** {scores.symbol.nunique()}")
+    badge = {"live cache": "🟢 Live from Screener", "live + snapshot": "🟢 Live + 🟡 snapshot",
+             "offline snapshot": "🟡 Offline snapshot", "synthetic demo": "🔴 SYNTHETIC demo"}[ld["source"]]
+    extra = ""
+    if ld["source"] == "live + snapshot":
+        extra = (f"  \n**Fetched live:** {len(ld.get('live_symbols', []))} companies · rest from snapshot of "
+                 f"{fmt_asof(ld.get('snapshot_as_of', ''))}")
+    sb.markdown(f"**Data:** {badge}  \n**Latest fetch:** {fmt_asof(ld['as_of'])}  \n"
+                f"**Companies:** {scores.symbol.nunique()}{extra}")
     for w in ld["warnings"]:
         sb.warning(w, icon="⚠️")
 
-    with sb.expander("Refresh live data", expanded=False):
-        st.caption("Fetches Screener.in (public pages, 1 request/second). If the site cannot be reached, "
-                   "nothing changes and the cached data stays on screen.")
-        mode = st.radio("What to refresh", ["stale", "one", "all"], key="rmode", horizontal=True,
-                        format_func={"stale": "Stale only (>7 days)", "one": "One company", "all": "Everything"}.get)
-        sym = None
-        if mode == "one":
-            sym = st.selectbox("Company", sorted(scores.symbol), key="rsym")
-        cases = st.checkbox("Include case-study companies", True, key="rcases")
-        if mode == "all":
-            st.info("A full refresh is ~20 requests per company: roughly an hour for the universe.")
-        if st.button("Refresh live data", type="primary", width="stretch"):
-            bar = st.progress(0.0, "Checking Screener.in…")
-            out = data.refresh_live(mode, sym, cases,
-                                    progress=lambda i, n, m: bar.progress(min(i / max(n, 1), 1.0), m[:80]))
-            bar.empty()
-            (st.success if out["ok"] else st.error)(out["message"])
-            if out.get("failures") is not None and len(out["failures"]):
-                st.dataframe(out["failures"][["symbol", "status"]], hide_index=True)
-            if out["ok"]:
-                st.cache_data.clear()
-                st.session_state["refreshed"] = out["message"]
-                st.rerun()
+    with sb.expander("🔄 Live Screener data", expanded=ld["demo"] or live.JOB.running):
+        live_status_panel("sidebar")
+        if not live.JOB.running:
+            st.caption("Fetches the latest published figures from Screener.in now (public pages, 1 request per "
+                       "second, about 13 s per company) and re-scores everything.")
+            uni = data.universe_choices()
+            label = dict(zip(uni.symbol, uni.symbol + " · " + uni.company_name.fillna("")))
+            mode = st.radio("Fetch", ["pick", "stale", "all"], key="lmode",
+                            format_func={"pick": "Chosen companies", "stale": "Missing / older than 7 days",
+                                         "all": "Entire universe"}.get)
+            if mode == "pick":
+                default = [x for x in st.session_state.get("lpick_default", []) if x in label]
+                syms = st.multiselect("Companies", list(label), default=default, key="lpick",
+                                      format_func=lambda x: label.get(x, x),
+                                      placeholder="Type a name or NSE symbol")
+            elif mode == "stale":
+                syms = data.stale_symbols(ld)
+            else:
+                syms = list(uni.symbol)
+            st.caption(f"{len(syms)} companies · about {live.fmt_secs(len(syms) * live.SECONDS_PER_COMPANY)}")
+            if st.button("Fetch live from Screener", type="primary", width="stretch", disabled=not syms):
+                start_live(syms, {"pick": "Chosen companies", "stale": "Missing/stale companies",
+                                  "all": "Entire universe"}[mode])
 
-    with sb.expander("Import browser capture", expanded=ld["demo"]):
+    with sb.expander("Import browser capture", expanded=False):
         st.caption("Use when Python cannot reach Screener.in: load the file saved by tools/capture_screener.js "
                    "(e.g. dstm_capture_full.json.gz). It is replayed through the same pipeline.")
         up = st.file_uploader("Capture file", type=["json", "gz"], key="cap")
@@ -192,7 +248,8 @@ sidebar_data(ld, tok, res.scores)
 sidebar_downloads(tok, cfg_json, res.scores)
 
 CTX.update(dict(ld=ld, tok=tok, cfg=cfg, cfg_json=cfg_json, res=res, meta=meta, dark=is_dark(),
-                P=charts.pal(is_dark()), cached_workbook=cached_workbook, fmt_asof=fmt_asof))
+                P=charts.pal(is_dark()), cached_workbook=cached_workbook, fmt_asof=fmt_asof,
+                start_live=start_live, live_panel=live_status_panel))
 
 HERE = Path(__file__).parent
 PAGES["portfolio"] = st.Page(str(HERE / "views" / "portfolio.py"), title="Portfolio", icon="📋", url_path="portfolio",
@@ -204,6 +261,15 @@ if st.session_state.get("refreshed"):
     st.toast(st.session_state.pop("refreshed"))
 if ld["demo"]:
     st.error("**SYNTHETIC DEMO DATA.** These are generated companies (SYN###), not Screener data. Do not use any "
-             "number on this screen. Load real data with *Refresh live data* or *Import browser capture* (sidebar).",
+             "number on this screen. Load real figures with **🔄 Live Screener data** in the sidebar.",
              icon="🛑")
+    if not live.JOB.running:
+        c1, c2, _ = st.columns([1.2, 1.2, 1.6])
+        n_all = len(data.universe_choices())
+        if c1.button(f"Fetch all {n_all} companies live (~{live.fmt_secs(n_all * live.SECONDS_PER_COMPANY)})",
+                     type="primary", width="stretch"):
+            start_live(list(data.universe_choices().symbol), "Entire universe")
+        if c2.button("Quick start: 12 companies (~3 min)", width="stretch",
+                     help="A few names per sector plus the stressed case studies, to see real output fast."):
+            start_live(QUICK_START, "Quick start")
 pg.run()

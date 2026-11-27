@@ -104,7 +104,7 @@ def test_live_cache_then_corrupt_db_falls_back_to_snapshot(tmp_path, monkeypatch
     at = fresh()
     no_exc(at)
     assert not any("SYNTHETIC" in e.value for e in at.error)
-    assert any("Live cache" in m.value for m in at.sidebar.markdown)
+    assert any("Live from Screener" in m.value for m in at.sidebar.markdown)
     assert (snap / "credit_lines.parquet").exists()
     (data_dir / "dstm.db").write_bytes(b"this is not a sqlite file" * 100)
     at = fresh()
@@ -127,6 +127,7 @@ def test_import_browser_capture(tmp_path, monkeypatch):
     with gzip.open(f, "wt", encoding="utf-8") as fh:
         json.dump(cap, fh)
     monkeypatch.setenv("DSTM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("DSTM_SNAPSHOT_DIR", str(tmp_path / "snap"))
     sys.path.insert(0, str(Path(APP).parent))
     import data
     data = importlib.reload(data)
@@ -147,3 +148,87 @@ def test_ai_tab_template_mode_and_log_on_method_page():
     at.switch_page("views/method.py").run()
     no_exc(at)
     assert any(d.label == "AI_Usage_Appendix.md" for d in at.get("download_button"))
+
+
+def _fake_screener(symbols):
+    from tests.fixtures import FakeTransport, company_responses, make_page, schedules
+    resp = {}
+    for k, sym in enumerate(symbols):
+        cid = str(4000 + k)
+        resp.update(company_responses(sym, cid, make_page(cid=cid), make_page(cid=cid, consolidated=False),
+                                      schedules(), schedules()))
+    return FakeTransport(resp)
+
+
+def test_live_fetch_merges_over_snapshot_and_runs_in_background(tmp_path, monkeypatch):
+    """Snapshot has 3 companies; a background live fetch of 1 company replaces only that company's rows, the other
+    two stay (the portfolio never shrinks), and the sidebar says 'Live + snapshot'."""
+    import importlib
+    import sys
+    import time
+    import pandas as pd
+    from dstm_data.config import Settings
+    from dstm_data.pipeline import Pipeline
+    sys.path.insert(0, str(Path(APP).parent))
+    # build a snapshot from a first (fake) fetch in another folder
+    p = Pipeline(Settings(data_dir=tmp_path / "old", min_interval_s=0),
+                 transport=_fake_screener(["TATASTEEL", "JSWSTEEL", "NTPC"]))
+    p.refresh(pd.DataFrame({"symbol": ["TATASTEEL", "JSWSTEEL", "NTPC"], "company_name": "x", "industry": "y"}),
+              force=True, progress=lambda *_: None)
+    p.cache.close()
+    import sqlite3
+    with sqlite3.connect(tmp_path / "old" / "dstm.db") as con:
+        old = pd.read_sql_query("SELECT * FROM credit_lines", con)
+    old["fetched_at"] = "2026-01-01T00:00:00+00:00"
+    (tmp_path / "snap").mkdir()
+    old.to_parquet(tmp_path / "snap" / "credit_lines.parquet", index=False)
+    monkeypatch.setenv("DSTM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("DSTM_SNAPSHOT_DIR", str(tmp_path / "snap"))
+    import data
+    import live
+    data = importlib.reload(data)
+    live = importlib.reload(live)
+    ld = data.load_credit_lines()
+    assert ld["source"] == "offline snapshot" and ld["cl"].symbol.nunique() == 3
+    assert set(data.stale_symbols(ld)) >= {"TATASTEEL", "JSWSTEEL", "NTPC"}      # fetched in January -> stale
+    monkeypatch.setattr(data, "reachable", lambda timeout=8: (True, "HTTP 200"))
+    monkeypatch.setattr(data, "TEST_TRANSPORT", _fake_screener(["NTPC"]))
+    ok, _ = live.JOB.start(["NTPC"], "test")
+    assert ok and live.JOB.running
+    assert data.token() == live.JOB.snapshot()["frozen_token"]                   # frozen while running
+    live.JOB.thread.join(30)
+    s = live.JOB.snapshot()
+    assert not s["running"] and s["ok"] and s["fetched"] == 1 and s["version"] == 1, s
+    ld = data.load_credit_lines()
+    assert ld["source"] == "live + snapshot" and ld["live_symbols"] == ["NTPC"]
+    assert ld["cl"].symbol.nunique() == 3
+    fa = data.fetched_at_by_symbol(ld["cl"])
+    assert fa["NTPC"] > "2026-06-01" and fa["JSWSTEEL"].startswith("2026-01-01")
+    assert "NTPC" not in data.stale_symbols(ld) and "JSWSTEEL" in data.stale_symbols(ld)
+    # the app opens on the merged data
+    at = fresh()
+    no_exc(at)
+    assert any("Live + " in m.value for m in at.sidebar.markdown)
+
+
+def test_live_fetch_unreachable_and_stop(tmp_path, monkeypatch):
+    import importlib
+    import sys
+    sys.path.insert(0, str(Path(APP).parent))
+    monkeypatch.setenv("DSTM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("DSTM_SNAPSHOT_DIR", str(tmp_path / "snap"))
+    import data
+    import live
+    data = importlib.reload(data)
+    live = importlib.reload(live)
+    monkeypatch.setattr(data, "reachable", lambda timeout=8: (False, "HTTP 403"))
+    live.JOB.start(["NTPC"], "t")
+    live.JOB.thread.join(10)
+    s = live.JOB.snapshot()
+    assert s["ok"] is False and "HTTP 403" in s["message"] and not s["running"]
+    # stop before the first company: nothing fetched, clean finish
+    monkeypatch.setattr(data, "reachable", lambda timeout=8: (True, "HTTP 200"))
+    monkeypatch.setattr(data, "TEST_TRANSPORT", _fake_screener(["NTPC", "LT"]))
+    live.JOB._stop.set()
+    out = data.refresh_symbols(["NTPC", "LT"], stop=lambda: True)
+    assert out["fetched"] == 0

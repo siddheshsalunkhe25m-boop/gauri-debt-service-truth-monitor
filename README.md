@@ -1,6 +1,6 @@
 # Gauri · Debt-Service Truth Monitor (DSTM)
 
-**Live app:** https://gauri-debt-service-truth-monitor.streamlit.app (Streamlit Community Cloud)
+**Live app:** https://gauri-debt-service-truth-monitor-www.streamlit.app (Streamlit Community Cloud)
 
 For a **credit analyst** deciding whether to sanction, renew, enhance, reprice or put a borrower on watch.
 Universe: Nifty 200 non-financial companies (NSE industry "Financial Services" excluded; Screener's bank/NBFC
@@ -26,7 +26,7 @@ python -m dstm_rts run               # scores + data/rts/RTS_calculation.xlsx
 python -m dstm_validate              # back-test + cases + sensitivity -> data/validation/
 streamlit run dashboard/app.py       # dashboard (Windows: double-click run_dashboard.bat)
 python -m dstm_ai note TATASTEEL     # AI credit pack (needs ANTHROPIC_API_KEY; template otherwise)
-python -m pytest -q tests            # 71 tests
+python -m pytest -q tests            # 73 tests
 
 Replaying the browser capture instead of fetching live:
 python -m dstm_data refresh --replay dstm_capture_full.json.gz --basis primary --force --extra COFFEEDAY,ZEEL,RCOM,JETAIRWAYS,SUNTV
@@ -102,22 +102,30 @@ for the payables stretch, deductions, interest add-back modes, leases, migration
   Breach Clock fan charts (baseline / stress), red flags, peer percentiles (NSE industry and universe), source lines
   with URLs, and a one-company calculation workbook.
 * **Method & data:** fetch status, audit log, validation status, definitions and proxies.
-* **Sidebar:** data source and as-of time; *Refresh live data* (stale / one company / all; checks Screener is
-  reachable first, backs up the cache and restores it if the run fails); *Import browser capture* (.json / .json.gz);
-  model settings (covenants, weights, class cut-offs, judgement calls); downloads (scores CSV, full calculation
-  workbook, settings JSON).
-* **Offline fallback:** live cache `data/dstm.db` -> snapshot `dashboard/snapshot/credit_lines.parquet` (rewritten
-  after each good load) -> synthetic demo with a red banner. `DSTM_DATA_DIR` / `DSTM_SNAPSHOT_DIR` override folders.
+* **Live Screener data (sidebar, and a button on each company page):** fetches the latest published figures from
+  Screener.in on demand - chosen companies, companies missing or older than 7 days, or the entire universe - at
+  1 request/second (~13 s per company, ~35 min for everything). The fetch runs in a background thread on the server,
+  so it keeps going if the tab is closed; progress, time left and a Stop button are shown to every visitor, and the
+  dashboard re-scores automatically when it ends ("Show fetched so far" re-scores mid-run). If Screener cannot be
+  reached from the server, nothing changes and the message says so. *Import browser capture* (.json / .json.gz) is
+  the fallback when the server is blocked.
+* **Sidebar:** data source, latest fetch time and how many companies were fetched live; model settings (covenants,
+  weights, class cut-offs, judgement calls); downloads (scores CSV, full calculation workbook, settings JSON).
+* **Data merge and offline fallback:** companies in the live cache `data/dstm.db` replace their rows in the snapshot
+  `dashboard/snapshot/credit_lines.parquet`; every other company keeps its snapshot figures, so fetching one company
+  never shrinks the portfolio. Each company page shows when its figures were fetched and whether they are live or
+  from the snapshot. With neither, a synthetic demo with a red banner. `DSTM_DATA_DIR` / `DSTM_SNAPSHOT_DIR` override folders.
 * The recommended decision is a rule-based suggestion (`dstm_rts/decision.py`); the analyst decides.
 
 ## Hosting (Streamlit Community Cloud) and data refresh
 
 * App: Streamlit Community Cloud, repository `gauri-debt-service-truth-monitor`, branch `main`, main file
-  `dashboard/app.py`, custom subdomain `gauri-debt-service-truth-monitor`. Optional secrets (App settings > Secrets):
+  `dashboard/app.py`, custom subdomain `gauri-debt-service-truth-monitor-www`. Optional secrets (App settings > Secrets):
   `ANTHROPIC_API_KEY`, `DSTM_AI_MODEL` (see `.streamlit/secrets.toml.example`); without a key the AI tab uses the template.
 * Data: the GitHub Action **Refresh Screener data** (`.github/workflows/refresh-data.yml`) runs every Monday 04:00 IST
   and on demand (Actions tab > Run workflow). It fetches Screener at 1 request/second (~40 minutes), runs the back-test,
   and commits `dashboard/snapshot/` (credit lines, fetch status, validation tables). The app redeploys on that commit and
   opens on real data. If a run gets too few companies, the previous snapshot is kept.
-* Hosted storage is temporary: "Refresh live data" inside the hosted app and the AI log last until the app restarts.
+* Hosted storage is temporary: figures fetched with "Live Screener data" inside the hosted app and the AI log last
+  until the app restarts or redeploys (which also happens after the weekly snapshot commit, which brings fresh data).
   Download the AI appendix from the Method & data page after a session; the committed snapshot is the durable data.

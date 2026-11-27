@@ -56,7 +56,11 @@ jobs:
           git config user.name "dstm-data-bot"
           git config user.email "dstm-data-bot@users.noreply.github.com"
           git add dashboard/snapshot
-          git diff --cached --quiet && echo "No change" || (git commit -m "Data snapshot $(date -u +%Y-%m-%d)" && git push)
+          if git diff --cached --quiet; then echo "No change"; exit 0; fi
+          git commit -m "Data snapshot $(date -u +%Y-%m-%d)"
+          # code may have been pushed while the fetch ran: rebase onto it instead of failing
+          for i in 1 2 3; do git pull --rebase origin "${GITHUB_REF_NAME}" && git push && exit 0; sleep 5; done
+          exit 1
 
       - name: Upload run outputs
         if: always()
@@ -66,4 +70,5 @@ jobs:
           path: |
             data/exports/
             data/validation/
+            dashboard/snapshot/
           if-no-files-found: ignore

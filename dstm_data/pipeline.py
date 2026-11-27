@@ -228,11 +228,15 @@ class Pipeline:
         return len(obs_all), len(cl_all)
 
     # ------------------------------------------------------------------ many companies
-    def refresh(self, universe: pd.DataFrame, force: bool = False, progress=print) -> pd.DataFrame:
+    def refresh(self, universe: pd.DataFrame, force: bool = False, progress=print, stop=lambda: False) -> pd.DataFrame:
+        """stop(): checked before each company; when it returns True the run ends cleanly, keeping what was fetched."""
         self.cache.start_run(self.run_id, "offline" if self.offline else self.t.mode,
                              json.dumps({"n": len(universe), "force": force, "basis": self.s.basis}))
         results = []
         for i, row in enumerate(universe.itertuples(index=False), 1):
+            if stop():
+                progress(f"[{i}/{len(universe)}] stopped by user")
+                break
             sym = row.symbol
             if not force and not self.offline and not self.is_stale(sym):
                 results.append({"symbol": sym, "status": "fresh_skipped"})

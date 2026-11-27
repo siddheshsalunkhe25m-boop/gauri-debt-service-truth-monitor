@@ -50,8 +50,19 @@ def render():
 
     # ---------------------------------------------------------------- header + decision
     st.title(s["company_name"])
-    st.caption(f"{sym} · {s['sector']} · latest scored FY {str(s.get('latest_fy'))[:7]} · "
-               f"Breach Clock debt as of {_f(s.get('breach_debt_date'), '{}')} · data {CTX['fmt_asof'](ld['as_of'])}")
+    fa = ld["cl"].loc[ld["cl"].symbol == sym, "fetched_at"].dropna().max() if "fetched_at" in ld["cl"] else None
+    where = ("live" if sym in set(ld.get("live_symbols", [])) else "snapshot") if not ld["demo"] else "synthetic"
+    hc, bc = st.columns([4, 1.3])
+    hc.caption(f"{sym} · {s['sector']} · latest scored FY {str(s.get('latest_fy'))[:7]} · "
+               f"Breach Clock debt as of {_f(s.get('breach_debt_date'), '{}')} · "
+               f"Screener figures fetched {CTX['fmt_asof'](fa) if fa else 'n/a'} ({where})")
+    if not ld["demo"]:
+        import live
+        if bc.button(f"🔄 Fetch {sym} live now", width="stretch", disabled=live.JOB.running,
+                     help="Pulls this company's latest figures from Screener.in (~15 s) and re-scores it."):
+            CTX["start_live"]([sym], f"{sym} (from drill-down)")
+        if live.JOB.running or st.session_state.get("live_result"):
+            CTX["live_panel"]("company")
     left, right = st.columns([1.05, 1.6])
     with left:
         cls = s.get("rts_class")

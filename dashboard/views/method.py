@@ -14,8 +14,9 @@ def render():
 
     st.subheader("Data")
     st.markdown(f"- **Source showing:** {ld['source']} · as of {CTX['fmt_asof'](ld['as_of'])}\n"
-                f"- **Order of fallback:** live cache (`data/dstm.db`) → offline snapshot "
-                f"(`dashboard/snapshot/credit_lines.parquet`, rewritten after each good load) → synthetic demo\n"
+                f"- **Merge and fallback:** companies fetched live (`data/dstm.db`, via *Live Screener data*) replace "
+                f"their rows in the offline snapshot (`dashboard/snapshot/credit_lines.parquet`, refreshed weekly by the "
+                f"GitHub Action); all other companies keep snapshot figures. Neither available → synthetic demo\n"
                 f"- **Universe:** NSE Nifty 200 minus NSE 'Financial Services'; Screener's bank/NBFC layout excluded as a "
                 f"safety net. Case studies (outside the index) are scored but hidden unless switched on.")
     cs = data.company_status()
