@@ -1,0 +1,5 @@
+case,peer,event,event_date,pre_event_cohorts_scored,first_watch_or_escalate_asof,first_escalate_asof,last_pre_event_class,last_pre_event_rts,last_pre_event_state,peer_last_pre_event_class,peer_last_pre_event_rts,peer_ever_flagged_pre_event
+COFFEEDAY,JUBLFOOD,"Defaults to lenders from early 2019; founder's death Jul 2019 (Business Standard); SEBI later found ~Rs 3,535 Cr moved to promoter entity MACEL (Sessions 7-8)",2019-01-31,3,2016-06-30,2016-06-30,Escalate,18.44832716212642,Speculative,Watch,96.09375,True
+ZEEL,SUNTV,"Share price fell ~30% in a day on 25 Jan 2019 on promoter-pledge fears (Business Standard, BloombergQuint)",2019-01-25,3,2017-06-30,2017-06-30,Escalate,24.841772151898734,Ponzi,Watch,64.56128834689302,True
+RCOM,BHARTIARTL,Ericsson's insolvency petition for unpaid dues (Sep 2017); NCLT admission May 2018; CIRP from Jun 2019,2017-09-30,2,2016-06-30,2016-06-30,Escalate,3.9249760306807295,Ponzi,Watch,89.36312379146214,True
+JETAIRWAYS,INDIGO,"First debt default (31 Dec 2018); operations suspended 17 Apr 2019 (AP, Reuters)",2018-12-31,3,2016-06-30,2016-06-30,Escalate,32.82803930100929,Speculative,Safe,96.09375,False
