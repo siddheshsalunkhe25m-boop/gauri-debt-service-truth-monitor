@@ -1,0 +1,69 @@
+# Fetches Screener.in (public pages, 1 request/second) on a GitHub runner, runs the back-test, and commits a data
+# snapshot to dashboard/snapshot/ so the hosted dashboard opens on real data. Run it from the Actions tab
+# ("Run workflow") or let it run every Monday 04:00 IST.
+name: Refresh Screener data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 22 * * 0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Restore cache (offline fallback + only-stale refresh)
+        uses: actions/cache@v4
+        with:
+          path: data/dstm.db
+          key: dstm-db-${{ github.run_id }}
+          restore-keys: dstm-db-
+
+      - name: Check Screener.in is reachable
+        run: |
+          curl -s -o /dev/null -w "Screener HTTP %{http_code}\n" -A "Mozilla/5.0" https://www.screener.in/company/TCS/consolidated/
+
+      - name: Refresh data (non-financial Nifty 200 + case studies)
+        run: python -m dstm_data refresh --basis primary --extra COFFEEDAY,ZEEL,RCOM,JETAIRWAYS,SUNTV
+
+      - name: Back-test, case studies, sensitivity
+        continue-on-error: true
+        run: python -m dstm_validate --paths 2000 --boot 500
+
+      - name: Write dashboard snapshot
+        run: python tools/write_snapshot.py
+
+      - name: Commit snapshot
+        run: |
+          git config user.name "dstm-data-bot"
+          git config user.email "dstm-data-bot@users.noreply.github.com"
+          git add dashboard/snapshot
+          git diff --cached --quiet && echo "No change" || (git commit -m "Data snapshot $(date -u +%Y-%m-%d)" && git push)
+
+      - name: Upload run outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dstm-run-${{ github.run_id }}
+          path: |
+            data/exports/
+            data/validation/
+          if-no-files-found: ignore
