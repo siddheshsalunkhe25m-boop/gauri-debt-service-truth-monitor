@@ -13,11 +13,28 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-import charts
-import data
-import live
-from ctx import CTX, PAGES
-from dstm_rts.config import RTSConfig
+
+def _purge_stale_code():
+    """Streamlit Cloud pulls new commits into a running server and re-runs app.py, but modules imported earlier
+    (data, live, dstm_*) stay in memory at the old version. If any .py file in the project changed since they were
+    loaded, drop them so the imports below load the new code."""
+    import sys as _sys
+    root = Path(__file__).resolve().parent.parent
+    stamp = max((p.stat().st_mtime_ns for p in root.rglob("*.py") if ".git" not in p.parts), default=0)
+    if getattr(_sys, "_dstm_code_stamp", None) != stamp:
+        for name, mod in list(_sys.modules.items()):
+            f = getattr(mod, "__file__", None) or ""
+            if f and Path(f).resolve().is_relative_to(root) and Path(f).resolve() != Path(__file__).resolve():
+                del _sys.modules[name]
+        _sys._dstm_code_stamp = stamp
+
+
+_purge_stale_code()
+import charts  # noqa: E402
+import data  # noqa: E402
+import live  # noqa: E402
+from ctx import CTX, PAGES  # noqa: E402
+from dstm_rts.config import RTSConfig  # noqa: E402
 
 st.set_page_config(page_title="Gauri · Debt-Service Truth Monitor", page_icon="📉", layout="wide")
 
